@@ -27,7 +27,7 @@ def generar_cohortes_morosidad(df, filtros=None, dias_morosidad=30):
     
     if filtros:
         for columna, valores in filtros.items():
-            if valores and "Todos" not in valores:
+            if valores:
                 df_filtrado = df_filtrado[df_filtrado[columna].isin(valores)]
     
     if df_filtrado.empty:
@@ -86,8 +86,8 @@ def main():
     with st.sidebar:
         st.header("Filtros")
         for col in columnas_filtrables:
-            valores = ['Todos'] + sorted(df[col].dropna().unique().tolist())
-            seleccion = st.multiselect(f"{col}", valores, default=['Todos'])
+            valores = sorted(df[col].dropna().unique().tolist())
+            seleccion = st.multiselect(f"{col}", valores, default=[])
             filtros[col] = seleccion
         
         dias_morosidad = st.slider("Días de Atraso", 30, 120, 30, step=30)
@@ -101,3 +101,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -1,75 +1,103 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-# Configuración de Streamlit
-st.set_page_config(layout="wide", page_title="Análisis de Cohortes con Plotly")
-
-# Función para cargar datos
 @st.cache_data
 def cargar_datos():
+    """
+    Carga los datos desde el archivo 'cosecha.xlsx' sin eliminar valores nulos.
+    """
     file_path = "cosecha.xlsx"
     xls = pd.ExcelFile(file_path)
     df = pd.read_excel(xls, sheet_name='vintage_analysis_report_2025022')
-
+    
     df['disbursement_date'] = pd.to_datetime(df['disbursement_date'], errors='coerce')
     df['last_date_of_month'] = pd.to_datetime(df['last_date_of_month'], errors='coerce')
-    df['year_disbursement'] = df['disbursement_date'].dt.year.astype(str)  
-    df['cohort_month'] = df['disbursement_date'].dt.to_period('M')  
-
+    df['year_disbursement'] = df['disbursement_date'].dt.year.astype(str)
+    df['cohort_month'] = df['disbursement_date'].dt.to_period('M')
+    
     return df
 
-df = cargar_datos()
+def generar_cohortes_morosidad(df, filtros=None, dias_morosidad=30):
+    """
+    Genera una tabla de cohortes de morosidad basada en monto en mora (>X días) sobre el monto total desembolsado.
+    """
+    df_filtrado = df.copy()
+    
+    if filtros:
+        for columna, valores in filtros.items():
+            if valores and "Todos" not in valores:
+                df_filtrado = df_filtrado[df_filtrado[columna].isin(valores)]
+    
+    if df_filtrado.empty:
+        return None
+    
+    total_desembolsado = df_filtrado.groupby('cohort_month', as_index=False)['debt_amount'].sum()
+    
+    df_filtrado = df_filtrado[df_filtrado['days_overdue'] > dias_morosidad]
+    
+    if df_filtrado.empty:
+        return None
+    
+    df_filtrado['morosidad_monto'] = df_filtrado['aum']
+    
+    df_filtrado['months_since_disbursement'] = (
+        df_filtrado['last_date_of_month'].dt.to_period('M') - df_filtrado['disbursement_date'].dt.to_period('M')
+    ).apply(lambda x: x.n)
+    
+    morosidad_agrupada = df_filtrado.groupby(['cohort_month', 'months_since_disbursement'], as_index=False).agg(
+        total_morosidad=('morosidad_monto', 'sum')
+    )
+    
+    morosidad_agrupada = morosidad_agrupada.merge(total_desembolsado, on='cohort_month', how='left')
+    morosidad_agrupada['morosidad_ratio'] = morosidad_agrupada['total_morosidad'] / morosidad_agrupada['debt_amount']
+    
+    cohort_morosidad = morosidad_agrupada.pivot(
+        index='cohort_month',
+        columns='months_since_disbursement',
+        values='morosidad_ratio'
+    )
+    
+    return cohort_morosidad
 
-# Sidebar: Filtros
-st.sidebar.header("Filtros")
-years = ["Todos"] + sorted(df["year_disbursement"].dropna().unique().tolist(), reverse=True)
-selected_year = st.sidebar.selectbox("Año de desembolso", years, index=0)
+def generar_heatmap(cohort_data, dias_morosidad):
+    """
+    Genera un heatmap de la tabla de cohortes de morosidad.
+    """
+    plt.figure(figsize=(14, 7))
+    sns.heatmap(cohort_data, annot=True, fmt=".1%", cmap="Blues", linewidths=0.5, mask=cohort_data.isnull(), annot_kws={"size": 8})
+    plt.title(f"Análisis de Cohortes - Morosidad (> {dias_morosidad} días) basada en Monto")
+    plt.xlabel("Meses Transcurridos desde el Desembolso")
+    plt.ylabel("Cohorte (Mes de Desembolso)")
+    plt.yticks(rotation=0)
+    plt.xticks(rotation=0)
+    st.pyplot(plt)
 
-dias_morosidad = st.sidebar.slider("Días de Atraso", min_value=30, max_value=120, step=30, value=30)
+def main():
+    st.title("Análisis de Cohortes - Morosidad")
+    df = cargar_datos()
+    
+    columnas_filtrables = ['adviser', 'analyst', 'motive', 'evaluation_type', 'score_range',
+                           'worst_score', 'condition', 'guarantee_zone', 'guarantee_ownership',
+                           'age_range', 'dti_range', 'exceptions', 'year_disbursement']
+    
+    filtros = {}
+    with st.sidebar:
+        st.header("Filtros")
+        for col in columnas_filtrables:
+            valores = ['Todos'] + sorted(df[col].dropna().unique().tolist())
+            seleccion = st.multiselect(f"{col}", valores, default=['Todos'])
+            filtros[col] = seleccion
+        
+        dias_morosidad = st.slider("Días de Atraso", 30, 120, 30, step=30)
+    
+    cohort_data = generar_cohortes_morosidad(df, filtros, dias_morosidad)
+    
+    if cohort_data is not None:
+        generar_heatmap(cohort_data, dias_morosidad)
+    else:
+        st.warning("No se encontraron resultados con los filtros seleccionados.")
 
-# Aplicar filtros
-df_filtrado = df.copy()
-if selected_year != "Todos":
-    df_filtrado = df_filtrado[df_filtrado["year_disbursement"] == selected_year]
-
-df_filtrado = df_filtrado[df_filtrado["days_overdue"] > dias_morosidad]
-
-if df_filtrado.empty:
-    st.warning("No hay datos para los filtros seleccionados")
-    st.stop()
-
-# Crear cohortes
-df_filtrado["months_since_disbursement"] = (
-    df_filtrado["last_date_of_month"].dt.to_period("M") - df_filtrado["disbursement_date"].dt.to_period("M")
-).apply(lambda x: x.n)
-
-cohort_morosidad = df_filtrado.pivot_table(
-    index="cohort_month",
-    columns="months_since_disbursement",
-    values="aum",
-    aggfunc="sum",
-    fill_value=0
-) / df_filtrado.groupby("cohort_month")["debt_amount"].sum().values[:, None]
-
-# Generar Heatmap con Plotly
-st.subheader(f"Análisis de Cohortes - Morosidad (> {dias_morosidad} días)")
-fig = px.imshow(cohort_morosidad, 
-                labels=dict(x="Meses Transcurridos", y="Cohorte", color="% Morosidad"),
-                x=cohort_morosidad.columns,
-                y=cohort_morosidad.index.astype(str),
-                color_continuous_scale="Blues")
-
-fig.update_layout(height=600, width=1000)
-
-# Hacer clic en el heatmap y mostrar detalles
-st.plotly_chart(fig)
-
-st.sidebar.subheader("Ver detalles")
-selected_cohort = st.sidebar.selectbox("Selecciona un cohorte", cohort_morosidad.index.astype(str))
-
-if selected_cohort:
-    st.write(f"Detalles para la cohorte {selected_cohort}:")
-    df_detalles = df[(df["cohort_month"].astype(str) == selected_cohort) & (df["days_overdue"] > dias_morosidad)]
-    st.dataframe(df_detalles)
+if __name__ == "__main__":
+    main()

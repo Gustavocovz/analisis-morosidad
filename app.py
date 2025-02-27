@@ -33,14 +33,17 @@ def generar_cohortes_morosidad(df, filtros=None, dias_morosidad=30):
                 df_filtrado = df_filtrado[df_filtrado[columna].isin(valores)]
    
     if df_filtrado.empty:
-        return None
+        return None, None
    
-    total_desembolsado = df_filtrado.groupby('cohort_month', as_index=False)['debt_amount'].sum()
+    total_desembolsado = df_filtrado.groupby('cohort_month', as_index=False).agg(
+        nro_desembolsado=('debt_amount', 'count'),
+        total_desembolsado=('debt_amount', 'sum')
+    )
    
     df_filtrado = df_filtrado[df_filtrado['days_overdue'] > dias_morosidad]
    
     if df_filtrado.empty:
-        return None
+        return None, None
    
     df_filtrado['morosidad_monto'] = df_filtrado['aum']
    
@@ -50,22 +53,23 @@ def generar_cohortes_morosidad(df, filtros=None, dias_morosidad=30):
     ).apply(lambda x: x.n if pd.notna(x) else 0)
    
     morosidad_agrupada = df_filtrado.groupby(['cohort_month', 'months_since_disbursement'], as_index=False).agg(
+        nro_morosidad=('morosidad_monto', 'count'),
         total_morosidad=('morosidad_monto', 'sum')
     )
    
     morosidad_agrupada = morosidad_agrupada.merge(total_desembolsado, on='cohort_month', how='left')
    
-    morosidad_agrupada['morosidad_ratio'] = morosidad_agrupada['total_morosidad'] / morosidad_agrupada['debt_amount']
+    morosidad_agrupada['%_morosidad'] = morosidad_agrupada['total_morosidad'] / morosidad_agrupada['total_desembolsado']
    
     cohort_morosidad = morosidad_agrupada.pivot(
         index='cohort_month',
         columns='months_since_disbursement',
-        values='morosidad_ratio'
+        values='%_morosidad'
     )
    
     cohort_morosidad = cohort_morosidad.where(cohort_morosidad > 0, other=None)
    
-    return cohort_morosidad
+    return cohort_morosidad, morosidad_agrupada
 
 def generar_heatmap(cohort_data, dias_morosidad):
     if cohort_data is None or cohort_data.empty:
@@ -74,12 +78,23 @@ def generar_heatmap(cohort_data, dias_morosidad):
    
     plt.figure(figsize=(14, 7))
     sns.heatmap(cohort_data, annot=True, fmt=".1%", cmap="Blues", linewidths=0.5, mask=cohort_data.isnull(), annot_kws={"size": 8})
-    plt.title(f"Análisis de Cohortes - Morosidad (> {dias_morosidad} días) basada en Monto", 
-          loc='center', fontsize=12)
+    plt.title(f"Análisis de Cohortes - Morosidad (> {dias_morosidad} días) basada en Monto", loc='center', fontsize=12)
     plt.xlabel("Meses Transcurridos desde el Desembolso")
     plt.ylabel("Cohorte (Mes de Desembolso)")
-    plt.yticks(rotation=0) # Mantener los meses en horizontal
+    plt.yticks(rotation=0)  # Mantener los meses en horizontal
     st.pyplot(plt)
+
+def mostrar_tabla(morosidad_agrupada):
+    if morosidad_agrupada is None or morosidad_agrupada.empty:
+        st.write("No hay datos disponibles para la tabla.")
+        return
+   
+    st.write("### Datos de Morosidad Filtrados")
+    st.dataframe(morosidad_agrupada)
+   
+    # Botón para exportar a CSV
+    csv = morosidad_agrupada.to_csv(index=False).encode('utf-8')
+    st.download_button("Descargar CSV", data=csv, file_name="morosidad_filtrada.csv", mime="text/csv")
 
 def main():
     st.set_page_config(layout="wide")  # Ajustar la barra lateral para más espacio en la visualización
@@ -110,8 +125,9 @@ def main():
         if seleccion:
             filtros_seleccionados[col] = seleccion
    
-    cohort_data = generar_cohortes_morosidad(df, filtros_seleccionados, dias_morosidad)
+    cohort_data, morosidad_agrupada = generar_cohortes_morosidad(df, filtros_seleccionados, dias_morosidad)
     generar_heatmap(cohort_data, dias_morosidad)
+    mostrar_tabla(morosidad_agrupada)
 
 if __name__ == "__main__":
     main()
